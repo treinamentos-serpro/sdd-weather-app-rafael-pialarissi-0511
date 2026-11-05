@@ -4,15 +4,23 @@ Fonte da verdade: [`specs/weather-app-spec.md`](../specs/weather-app-spec.md). E
 
 ## Architecture
 
-Aplicação cliente estática, sem backend e sem autenticação. Manter a separação já adotada no projeto:
+Aplicação cliente estática, sem backend e sem autenticação. Separar o sistema em camadas pequenas, com fluxo de dependências unidirecional:
 
-- `components/`: apresentação e interação acessível.
-- `hooks/useWeather.ts`: orquestra busca, seleção, consulta, retry e estados da UI.
-- `services/weatherService.ts`: integração HTTP, validação e normalização de respostas Open-Meteo.
-- `lib/`: funções puras de conversão, formatação e mapeamento de códigos meteorológicos.
-- `types/weather.ts`: contratos de domínio compartilhados.
+```text
+components -> hooks -> services -> Open-Meteo
+  |          |          |
+  +--------> lib <------+  (funções puras; sem I/O ou estado)
+       types        (contratos compartilhados)
+```
 
-Não adicionar biblioteca de estado global. A unidade selecionada é estado local da aplicação; dados meteorológicos permanecem em Celsius no domínio e são formatados somente na apresentação.
+- `components/` recebe props e emite eventos; renderiza conteúdo e estados acessíveis. Não faz `fetch`, não normaliza payloads externos e não coordena requisições.
+- `hooks/` orquestra busca, seleção, estado de carregamento/erro/vazio, retry e invalidação de respostas obsoletas. Depende de interfaces/funções de serviço, não de detalhes HTTP.
+- `services/` é o único ponto de acesso às APIs: constrói requests, aplica timeout, valida JSON e normaliza os campos Open-Meteo para os tipos do domínio.
+- `lib/` contém funções puras para conversão/formatação de temperatura, datas e códigos meteorológicos. Não importa React, serviços nem componentes.
+- `types/` declara contratos de domínio compartilhados e não contém lógica.
+- `App.tsx` compõe componentes e mantém a unidade escolhida; não replica lógica de rede.
+
+Não adicionar biblioteca de estado global. Temperaturas permanecem em Celsius, sem arredondamento, no domínio; a conversão e o arredondamento ocorrem somente na apresentação.
 
 ## Tech Stack
 
@@ -54,6 +62,8 @@ tests/
   unit/                           # serviços, lógica pura e componentes
   e2e/                            # fluxos principais e responsividade
 ```
+
+Limites de dependência: componentes importam tipos e funções de apresentação de `lib/`, além de receberem estado/ações do hook ou de `App`; somente o hook chama `services/`; somente o serviço conhece URLs, parâmetros e formatos brutos da Open-Meteo. `lib/` e `types/` não dependem das demais camadas.
 
 ## Data Model
 
@@ -152,17 +162,63 @@ Invariantes:
 
 ### Geocoding
 
-- Endpoint: `https://geocoding-api.open-meteo.com/v1/search`.
-- Parâmetros: `name` (termo aparado e codificado), `count=5`, `language=pt`, `format=json`.
-- Mapear `id`, `name`, `country`, `admin1`, `latitude` e `longitude`; preservar ausência de campos opcionais.
-- Resultado sem `results` ou lista vazia é busca sem correspondência, não falha de transporte.
+- **URL:** `GET https://geocoding-api.open-meteo.com/v1/search?name=Campinas&count=5&language=pt&format=json`.
+- **Parâmetros:** `name` é o termo aparado e codificado com `URLSearchParams`; `count=5` limita a resposta; `language=pt` solicita nomes em português quando disponíveis; `format=json` solicita JSON.
+- **Resposta resumida:**
+
+```json
+{
+  "results": [
+    {
+      "id": 123456,
+      "name": "Campinas",
+      "latitude": -22.91,
+      "longitude": -47.06,
+      "country": "Brasil",
+      "admin1": "São Paulo"
+    }
+  ]
+}
+```
+
+- **Mapeamento para `City`:** `id`, `name`, `country`, `admin1`, `latitude` e `longitude` são copiados para os campos homônimos. `country` e `admin1` são opcionais; não inventar dados ausentes. `results` ausente ou vazio normaliza para lista vazia, não para erro de rede.
 
 ### Forecast
 
-- Endpoint: `https://api.open-meteo.com/v1/forecast`.
-- Parâmetros: `latitude`, `longitude`, `current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m,surface_pressure,precipitation`, `daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max`, `forecast_days=5`, `timezone=auto`, Celsius e vento em km/h.
-- Validar `current`, `daily`, timezone e cinco datas. Correlacionar arrays diários pelo mesmo índice.
-- Usar as unidades esperadas pela spec: °C internamente, %, km/h, hPa, mm e probabilidade em %.
+- **URL:** `GET https://api.open-meteo.com/v1/forecast`.
+- **Parâmetros:**
+  - `latitude` e `longitude`: coordenadas da `City` selecionada.
+  - `current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m,surface_pressure,precipitation`.
+  - `daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max`.
+  - `forecast_days=5` e `timezone=auto` para cinco datas no fuso local da cidade.
+  - `temperature_unit=celsius`, `wind_speed_unit=kmh` e `precipitation_unit=mm`; pressão usa hPa.
+- **Resposta resumida:**
+
+```json
+{
+  "timezone": "America/Sao_Paulo",
+  "current": {
+    "time": "2026-11-05T12:00",
+    "temperature_2m": 23.4,
+    "weather_code": 2,
+    "relative_humidity_2m": 64,
+    "wind_speed_10m": 11.5,
+    "surface_pressure": 924.2,
+    "precipitation": 0
+  },
+  "daily": {
+    "time": ["2026-11-05", "2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09"],
+    "weather_code": [2, 3, 61, 2, 1],
+    "temperature_2m_min": [16, 17, 18, 16, 15],
+    "temperature_2m_max": [25, 26, 23, 24, 25],
+    "precipitation_probability_max": [10, 20, 70, null, 0]
+  }
+}
+```
+
+- **Mapeamento para `WeatherData`:** associar a `City` selecionada e `timezone` retornado. De `current`, mapear `time` → `time`, `temperature_2m` → `temperatureC`, `weather_code` → `weatherCode`, `relative_humidity_2m` → `humidityPercent`, `wind_speed_10m` → `windSpeedKmh`, `surface_pressure` → `pressureHpa` e `precipitation` → `precipitationMm`.
+- **Mapeamento para `ForecastDay`:** percorrer os cinco índices de `daily.time`; para cada índice `i`, mapear `time[i]` → `date`, `weather_code[i]` → `weatherCode`, `temperature_2m_min[i]` → `minTemperatureC`, `temperature_2m_max[i]` → `maxTemperatureC` e `precipitation_probability_max[i]` → `precipitationProbabilityPercent`. Código meteorológico é convertido em rótulo pela camada `lib/weatherCodes.ts`.
+- Campo individual ausente ou `null` vira `null` no modelo e é exibido como `—`. `current` ou `daily` ausente, timezone inválido, arrays desalinhados estruturalmente ou menos de cinco datas geram erro recuperável; nunca preencher precipitação ausente com zero.
 - Sem polling, retry automático ou provedor de fallback. Confirmar cotas, disponibilidade e atribuição exigida pelo Open-Meteo antes do lançamento.
 
 ## State Management
@@ -205,17 +261,23 @@ interface WeatherViewState {
 
 ## Testing Strategy
 
-- **Unitários:** aparar/codificar busca; conversão C/F e arredondamento apenas na apresentação; rótulos weather code; datas no fuso local; normalização de campos ausentes.
-- **Serviço (Vitest + fetch mock):** URLs/parâmetros dos dois endpoints, limite de cinco resultados, unidades, lista vazia, HTTP 429/5xx, rede, timeout de 10 s, JSON inválido, campo individual ausente e resposta com menos de cinco datas.
-- **Hook/componentes (Testing Library):** não selecionar cidade automaticamente; input vazio não chama API; selecionar resultado consulta coordenadas corretas; retry repete a operação falha; resposta obsoleta não substitui cidade; loading, vazio e erro acessíveis; alternar unidade não chama API.
-- **E2E (Playwright):** busca, seleção explícita, clima atual, cinco dias, alternância, vazio, retry e fluxo mobile a 320 px. Interceptar Open-Meteo para cenários determinísticos; manter ao menos uma verificação de integração real fora do conjunto bloqueante, condicionada à disponibilidade externa.
-- **Acessibilidade:** executar análise automatizada sem violações críticas/graves e cobrir busca, seleção, alternância e retry por teclado.
+- **Funções puras (`lib/`, Vitest):** testar Celsius/Fahrenheit nos dois sentidos, valores negativos e ponto de congelamento, arredondamento somente na formatação, conversões repetidas sem perda acumulada, códigos meteorológicos conhecidos/desconhecidos e datas/rótulos locais. Esses testes não montam React nem fazem I/O.
+- **Serviços (`services/`, Vitest com `fetch` mockado):** verificar URL e parâmetros de geocoding e forecast; busca aparada/codificada, até cinco resultados e resposta vazia; mapeamento de cada campo Open-Meteo; valores ausentes/null; HTTP 429/5xx, falha de rede, timeout em 10 s, JSON inválido, ausência de `current`/`daily`/timezone e forecast com arrays desalinhados ou menos de cinco datas. Confirmar também que timeout cancela o request e que retry não é automático.
+- **Hooks (`hooks/`, Testing Library com serviços mockados):** verificar estados idle/loading/results/success/empty/error, busca vazia sem chamada, seleção explícita, associação da cidade aos dados, retry da operação e argumentos corretos, nova busca limpando dados anteriores e resposta obsoleta ignorada. Não repetir aqui testes de serialização HTTP.
+- **Componentes (`components/`, Testing Library):** testar os estados requeridos separadamente: loading (`role="status"` e texto), erro (`role="alert"` e botão de retry), vazio (nenhuma cidade), sucesso (cidade, unidades, métricas e cinco dias); também nomes acessíveis, operação por teclado e conversão visual quando muda a unidade. Componentes recebem dados/handlers controlados, sem rede.
+- **Playwright (E2E):** cobrir o fluxo completo de busca, lista sem seleção automática, seleção de resultado, condições atuais, cinco dias e alternância de unidade; cenários de input vazio, nenhum resultado, erro + retry e ausência de associação com cidade antiga. Interceptar APIs com respostas determinísticas, incluindo uma resposta atrasada para validar concorrência.
+- **Viewport mobile:** executar o fluxo principal em 320 px e verificar que busca, seleção, alternância e dados continuam acessíveis e que `scrollWidth <= clientWidth`; manter também um smoke em desktop. Não duplicar em E2E todos os casos de payload já cobertos no serviço.
+- **Acessibilidade:** incluir checagem automatizada sem violações críticas/graves e navegação por teclado para busca, seleção, unidade e retry.
+- **API real:** testes bloqueantes usam mocks para não depender de rede, cota ou disponibilidade externa. Uma chamada real pode existir como smoke manual/não bloqueante antes do lançamento.
 - **Gate do projeto:** `pnpm lint`, `pnpm build`, `pnpm test` e `pnpm test:e2e`.
 
 ## Risks & Trade-offs
 
-- **Limites, disponibilidade e atribuição do Open-Meteo:** verificar condições de uso e cota antes do lançamento. Sem fallback, indisponibilidade impede consultas.
-- **Validação estrita de cinco dias:** garante contrato simples e previsível, mas transforma respostas parciais de dias em erro recuperável; campos individuais continuam tolerantes via `null`.
-- **Sem atualização automática:** reduz tráfego e complexidade, mas os dados podem envelhecer durante uma sessão.
-- **Acessibilidade WCAG 2.2 AA e matriz de navegadores:** aumentam custo de validação; manter verificações automatizadas e fluxos E2E focados.
-- **Divergências atuais a resolver durante implementação:** o hook existente seleciona automaticamente o primeiro resultado; os tipos existentes tornam métricas obrigatórias; o serviço atual converte probabilidade diária ausente em `0` e não valida cinco datas; não há proteção completa contra respostas obsoletas. A implementação deve passar a obedecer à spec antes de considerar os critérios concluídos.
+- **Estado React local em hook vs. store global/React Query:** manter hook e estado local porque há uma cidade ativa, sem cache nem sincronização; store/cache adicionaria dependências e invalidação antes de existir necessidade de produto. Reconsiderar apenas se histórico, várias cidades ou cache entrarem no escopo.
+- **`fetch` mockado vs. API real nos testes bloqueantes:** mocks dão respostas determinísticas para falhas, timeout e payloads raros; testes live são mais próximos do provedor, mas flakey, sujeitos a cota e indisponibilidade. Manter live apenas como smoke não bloqueante.
+- **Testes por camada vs. muitos E2E:** testes unitários/integração localizam falhas com rapidez; E2E cobrem poucos caminhos de alto valor ponta a ponta. Evitar testar cada variação de payload via navegador.
+- **Validar exatamente cinco dias vs. renderizar dias recebidos:** rejeitar estrutura com menos de cinco dias mantém promessa e UI consistentes; tolerar dias parciais reduziria falhas, mas poderia apresentar previsão incompleta como completa. Campos individuais permanecem tolerantes via `null`.
+- **Retry manual vs. retry automático:** retry manual evita chamadas duplicadas e consumo de cota; automático poderia melhorar recuperação transitória, mas exige política de backoff e limites não definidos pela spec.
+- **Sem atualização automática vs. polling:** economiza tráfego e evita complexidade de ciclo de vida; os dados podem envelhecer numa sessão. A v1 refaz a consulta ao selecionar outra cidade ou após erro.
+- **Sem provedor de fallback vs. continuidade durante indisponibilidade:** um segundo provedor aumentaria resiliência, mas exige contratos, unidade/semântica equivalentes e custo de integração; fora da v1.
+- **Divergências atuais a resolver durante implementação:** o hook existente seleciona automaticamente o primeiro resultado; os tipos existentes tornam métricas obrigatórias; o serviço atual converte probabilidade diária ausente em `0` e não valida cinco datas; não há proteção completa contra respostas obsoletas. A implementação deve obedecer à spec antes de considerar os critérios concluídos.
