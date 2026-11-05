@@ -65,37 +65,59 @@ type Unit = 'celsius' | 'fahrenheit';
 type NullableNumber = number | null;
 
 interface City {
+  /** Identificador da localidade no geocoding. */
   id: number;
+  /** Nome da cidade retornado pela busca. */
   name: string;
+  /** País, quando fornecido pelo geocoding. */
   country?: string;
+  /** Estado ou região administrativa, quando disponível. */
   admin1?: string;
+  /** Latitude usada na consulta meteorológica. */
   latitude: number;
+  /** Longitude usada na consulta meteorológica. */
   longitude: number;
 }
 
 interface CurrentWeather {
+  /** Horário local da observação atual, em ISO 8601. */
   time: string;
+  /** Temperatura atual em Celsius, antes de arredondar para exibição. */
   temperatureC: NullableNumber;
+  /** Código WMO da condição meteorológica atual. */
   weatherCode: number | null;
+  /** Umidade relativa atual, em porcentagem. */
   humidityPercent: NullableNumber;
+  /** Velocidade atual do vento, em km/h. */
   windSpeedKmh: NullableNumber;
+  /** Pressão à superfície, em hPa. */
   pressureHpa: NullableNumber;
+  /** Precipitação atual, em milímetros. */
   precipitationMm: NullableNumber;
 }
 
 interface ForecastDay {
-  date: string; // YYYY-MM-DD no fuso local da cidade
+  /** Data local do dia previsto, no formato YYYY-MM-DD. */
+  date: string;
+  /** Código WMO da condição meteorológica diária. */
   weatherCode: number | null;
+  /** Temperatura mínima diária em Celsius. */
   minTemperatureC: NullableNumber;
+  /** Temperatura máxima diária em Celsius. */
   maxTemperatureC: NullableNumber;
+  /** Probabilidade máxima diária de precipitação, em porcentagem. */
   precipitationProbabilityPercent: NullableNumber;
 }
 
 interface WeatherData {
+  /** Cidade cujas coordenadas originaram os dados. */
   city: City;
+  /** Fuso IANA retornado pelo forecast para a cidade. */
   timezone: string;
+  /** Condições atuais normalizadas. */
   current: CurrentWeather;
-  forecast: ForecastDay[]; // pós-condição do serviço: exatamente 5 itens
+  /** Previsão local normalizada; o serviço valida exatamente cinco dias. */
+  forecast: ForecastDay[];
 }
 
 type WeatherOperation = 'geocoding' | 'forecast';
