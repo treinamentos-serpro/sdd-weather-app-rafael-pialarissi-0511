@@ -158,6 +158,28 @@ Invariantes:
 6. A UI renderiza dados, placeholders `—` e unidades. Alternar unidade recalcula a exibição dos valores originais sem requisição externa.
 7. Retry repete a última operação que falhou: busca com o mesmo termo ou previsão para a mesma cidade.
 
+```mermaid
+flowchart TD
+  A[Input de busca] --> B{Termo vazio?}
+  B -- Sim --> C[Hook: validar entrada]
+  C --> D[UI: pedir nome da cidade]
+  B -- Nao --> E[Hook: loading da busca]
+  E --> F[Service de geocoding]
+  F --> G{Resultado}
+  G -- Lista vazia --> H[Hook: estado empty]
+  H --> I[UI: nenhuma cidade encontrada]
+  G -- Erro ou timeout --> J[Hook: estado error]
+  J --> K[UI: erro e tentar novamente]
+  G -- Cidades encontradas --> L[UI: lista de cidades]
+  L --> M[Pessoa seleciona cidade]
+  M --> N[Hook: cidade selecionada e loading]
+  N --> O[Service de forecast]
+  O --> P{Resposta valida?}
+  P -- Nao, HTTP, rede ou timeout --> J
+  P -- Sim --> Q[Hook: estado success com WeatherData]
+  Q --> R[UI: clima atual e previsao]
+```
+
 ## External APIs
 
 ### Geocoding
